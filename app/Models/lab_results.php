@@ -8,6 +8,10 @@ use Illuminate\Database\Eloquent\Model;
 class lab_results extends Model
 {
     use HasFactory;
-    protected $table = 'lab_results';
-    protected $guide = [];
+    protected $fillable = ['patient_id', 'test_code', 'value', 'unit', 'reference_range', 'flag'];
+
+    public function patient()
+    {
+        return $this->belongsTo(patients::class);
+    }
 }

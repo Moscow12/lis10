@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\lab_results;
+use App\Models\patients;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -10,61 +11,53 @@ class HL7Controller extends Controller
 {
     public function receive(Request $request)
     {
-        // $hl7Data = $request->getContent(); // HL7 often sent as raw text
-        // Log::info('HL7 Received', ['data' => $hl7Data]);
+        $hl7 = $request->input('data');
+        // Clean control characters
+        $cleaned = preg_replace("/[\x0b\x1c]/", '', $hl7);
+        $lines = preg_split("/\r\n|\r|\n/", trim($cleaned));
 
-        // Optional: parse or store the HL7 data here
-        $json = $request->getContent();
-        $data = json_decode($json, true);
-    
-        if (!isset($data['data'])) {
-            return response()->json(['error' => 'Invalid data format'], 400);
-        }
-    
-        $raw = trim($data['data'], "\x0b\x1c\r"); // remove HL7 framing
-        $segments = explode("\r", $raw);
-    
-        $patientName = '';
-        $gender = '';
+        $patientData = [];
         $results = [];
-    
-        foreach ($segments as $segment) {
-            $fields = explode('|', $segment);
-            if (isset($fields[0])) {
-                switch ($fields[0]) {
-                    case 'PID':
-                        $patientName = $fields[5] ?? '';
-                        $gender = $fields[8] ?? '';
-                        break;
-                    case 'OBX':
-                        $results[] = [
-                            'test_code'       => $fields[3] ?? '',
-                            'test_name'       => '', // if available separately
-                            'value'           => $fields[5] ?? '',
-                            'unit'            => $fields[6] ?? '',
-                            'reference_range' => $fields[7] ?? '',
-                            'abnormal_flag'   => $fields[8] ?? '',
-                        ];
-                        break;
-                }
+        foreach ($lines as $line) {
+            $fields = explode('|', $line);
+            $segment = $fields[0];
+            
+            if ($segment === 'PID') { 
+                $patientData = [
+                    'external_id' => !empty($fields[2]) ? $fields[2] : $fields[3],
+                    'name' => $fields[5] ?? null,
+                    'dob' => !empty($fields[6]) ? $fields[6] : $fields[7], // not provided
+                    'sex' => $fields[8],
+                ];
+            }
+            
+            if ($segment === 'OBX') {
+                $results[] = [
+                    'test_code' => $fields[3] ?? null,
+                    'value' => $fields[5] ?? null,
+                    'units' => !empty($fields[3]) ? $fields[3] : $fields[5],
+                    'reference_range' => $fields[7] ?? null,
+                    'abnormal_flag' => $fields[8] ?? null,
+                ];
             }
         }
-    
-        // Save to database
-        foreach ($results as $result) {
-            lab_results::create([
-                'patient_name'     => $patientName,
-                'gender'           => $gender,
-                'test_code'        => $result['test_code'],
-                'test_name'        => $result['test_name'],
-                'value'            => $result['value'],
-                'unit'             => $result['unit'],
-                'reference_range'  => $result['reference_range'],
-                'abnormal_flag'    => $result['abnormal_flag'],
-            ]);
+
+        // Save to database (Patient and related LabResults)
+        $patient = \App\Models\Patients::firstOrCreate(
+            ['external_id' => $patientData['external_id']],
+            $patientData
+        );
+
+        foreach ($results as $res) {
+            $patient->results()->create($res);
         }
-    
-        return response()->json(['status' => 'success', 'inserted' => count($results)]);
+
+        return response()->json([
+            'message' => 'Data extracted and saved',
+            'patient' => $patientData,
+        ]);
+
+
         // return response()->json(['message' => 'HL7 data received successfully'], 200);
     }
 }
